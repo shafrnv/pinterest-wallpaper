@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
@@ -17,10 +16,37 @@ pub struct OauthTokens {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionCookies {
-    /// Pinterest `_auth` cookie value
+    /// Pinterest `_auth` cookie. Logged-in accounts often store just `1` here.
     pub auth: String,
     /// Pinterest `csrftoken` cookie value
     pub csrftoken: String,
+    /// Real session token. `_auth=1` without this is not a login.
+    #[serde(default)]
+    pub pinterest_sess: String,
+    /// Cookie header as the browser would send it to www.pinterest.com.
+    #[serde(default)]
+    pub cookie_header: String,
+}
+
+impl SessionCookies {
+    pub fn header(&self) -> String {
+        if !self.cookie_header.is_empty() {
+            return self.cookie_header.clone();
+        }
+        let mut parts = vec![
+            format!("_auth={}", self.auth),
+            format!("csrftoken={}", self.csrftoken),
+        ];
+        if !self.pinterest_sess.is_empty() {
+            parts.push(format!("_pinterest_sess={}", self.pinterest_sess));
+        }
+        parts.join("; ")
+    }
+
+    pub fn is_logged_in(&self) -> bool {
+        self.csrftoken.len() >= 8
+            && (self.pinterest_sess.len() > 20 || self.auth.len() > 8)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -69,28 +95,4 @@ impl AuthStore {
         self.session = None;
         self.save()
     }
-
-    pub fn prompt_session_login() -> Result<SessionCookies> {
-        println!("Pinterest session login");
-        println!("1. Open https://www.pinterest.com and sign in");
-        println!("2. Open DevTools → Application/Storage → Cookies → www.pinterest.com");
-        println!("3. Copy the values of `_auth` and `csrftoken`\n");
-
-        let auth = prompt("Paste `_auth` cookie: ")?;
-        let csrftoken = prompt("Paste `csrftoken` cookie: ")?;
-
-        if auth.is_empty() || csrftoken.is_empty() {
-            anyhow::bail!("both cookies are required");
-        }
-
-        Ok(SessionCookies { auth, csrftoken })
-    }
-}
-
-fn prompt(label: &str) -> Result<String> {
-    print!("{label}");
-    io::stdout().flush()?;
-    let mut line = String::new();
-    io::stdin().read_line(&mut line)?;
-    Ok(line.trim().to_string())
 }

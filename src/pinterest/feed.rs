@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use tracing::{info, warn};
 
 use crate::auth::AuthStore;
-use crate::config::{Config, FeedSource, OauthConfig};
+use crate::config::{Config, FeedSource};
 use crate::pinterest::boards::BoardsClient;
 use crate::pinterest::homefeed::HomefeedClient;
 use crate::pinterest::oauth;
@@ -55,7 +55,7 @@ impl FeedManager {
                 }
             }
             FeedSource::AllBoards => {
-                let (client, _) = oauth_client(cfg)?;
+                let client = oauth_client(cfg)?;
                 let board_ids = client.list_board_ids().await?;
                 if board_ids.is_empty() {
                     bail!("no boards found on this account");
@@ -69,7 +69,7 @@ impl FeedManager {
                 }
             }
             FeedSource::Board { id } => {
-                let (client, _) = oauth_client(cfg)?;
+                let client = oauth_client(cfg)?;
                 SourceState::Boards {
                     client,
                     board_ids: vec![id.clone()],
@@ -170,20 +170,31 @@ impl FeedManager {
     }
 }
 
-fn oauth_client(cfg: &Config) -> Result<(BoardsClient, OauthConfig)> {
-    let oauth = cfg
-        .oauth
-        .clone()
-        .context("oauth not configured in config.toml")?;
+fn oauth_client(cfg: &Config) -> Result<BoardsClient> {
     let mut store = AuthStore::load()?;
-    oauth::refresh_if_needed(&oauth, &mut store)?;
-    let token = store
+    if let Some(oauth) = cfg.oauth.as_ref() {
+        if !oauth.client_secret.is_empty() {
+            oauth::refresh_if_needed(oauth, &mut store)?;
+        }
+    }
+    let tokens = store
         .oauth
         .as_ref()
-        .context("not logged in — run `login-oauth`")?
-        .access_token
-        .clone();
-    Ok((BoardsClient::new(token)?, oauth))
+        .context("not logged in — run `login-oauth` or paste a trial access token")?;
+    if tokens.refresh_token.is_none() {
+        if let Some(exp) = tokens.expires_at {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            if now >= exp {
+                anyhow::bail!(
+                    "trial access token expired — create a new one in the Pinterest developer console"
+                );
+            }
+        }
+    }
+    Ok(BoardsClient::new(tokens.access_token.clone())?)
 }
 
 fn list_local_images(dir: &std::path::Path) -> Result<Vec<PathBuf>> {

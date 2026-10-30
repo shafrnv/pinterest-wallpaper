@@ -1,5 +1,8 @@
 use anyhow::{Context, Result};
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -13,8 +16,8 @@ use crate::config::Config;
 pub struct ImageCache {
     dir: PathBuf,
     client: reqwest::Client,
-    /// Simple lock so concurrent downloads of the same URL don't race badly
-    inflight: Arc<Mutex<()>>,
+    /// One lock per URL, so different pins download together.
+    inflight: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl ImageCache {
@@ -23,11 +26,15 @@ impl ImageCache {
         std::fs::create_dir_all(&dir)?;
         let client = reqwest::Client::builder()
             .user_agent("pinterest-wallpaper/0.1")
+            // This network has no IPv6 route. Bind an IPv4 socket and resolve
+            // only A records, otherwise the connect dies with ENETUNREACH.
+            .local_address(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+            .dns_resolver(Arc::new(Ipv4Prefer))
             .build()?;
         Ok(Self {
             dir,
             client,
-            inflight: Arc::new(Mutex::new(())),
+            inflight: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -46,8 +53,15 @@ impl ImageCache {
             return Ok(path);
         }
 
-        let _guard = self.inflight.lock().await;
+        let gate = {
+            let mut map = self.inflight.lock().await;
+            map.entry(url.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        let guard = gate.lock().await;
         if path.exists() {
+            drop(guard);
             return Ok(path);
         }
 
@@ -65,6 +79,11 @@ impl ImageCache {
         let tmp = path.with_extension("tmp");
         tokio::fs::write(&tmp, &bytes).await?;
         tokio::fs::rename(&tmp, &path).await?;
+        drop(guard);
+        {
+            let mut map = self.inflight.lock().await;
+            map.remove(url);
+        }
         self.evict_if_needed().await;
         Ok(path)
     }
@@ -116,3 +135,36 @@ fn guess_ext(url: &str) -> &'static str {
         ".jpg"
     }
 }
+/// Resolve names to IPv4 when any A record exists.
+struct Ipv4Prefer;
+
+impl Resolve for Ipv4Prefer {
+    fn resolve(&self, name: Name) -> Resolving {
+        Box::pin(async move {
+            let host = name.as_str().to_string();
+            let looked = tokio::net::lookup_host((host.as_str(), 0))
+                .await
+                .map_err(|err| -> Box<dyn std::error::Error + Send + Sync> { Box::new(err) })?;
+            let mut v4 = Vec::new();
+            let mut v6 = Vec::new();
+            for addr in looked {
+                if addr.is_ipv4() {
+                    v4.push(addr);
+                } else {
+                    v6.push(addr);
+                }
+            }
+            let addrs: Vec<SocketAddr> = if v4.is_empty() { v6 } else { v4 };
+            if addrs.is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no addresses",
+                )
+                .into());
+            }
+            let iter: Addrs = Box::new(addrs.into_iter());
+            Ok(iter)
+        })
+    }
+}
+

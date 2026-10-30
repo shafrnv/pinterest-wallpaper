@@ -78,11 +78,17 @@ fn cmd_login_oauth() -> Result<()> {
 }
 
 fn cmd_login_session() -> Result<()> {
-    let session = AuthStore::prompt_session_login()?;
+    let session = auth::login_with_browser()?;
     let mut store = AuthStore::load()?;
     store.session = Some(session);
     store.save()?;
-    println!("Session cookies saved to {}", Config::config_dir()?.display());
+    let mut cfg = Config::load()?;
+    cfg.feed = config::FeedSource::Homefeed;
+    cfg.save()?;
+    println!(
+        "Сессия сохранена ({}), лента переключена на homefeed.",
+        Config::config_dir()?.display()
+    );
     Ok(())
 }
 

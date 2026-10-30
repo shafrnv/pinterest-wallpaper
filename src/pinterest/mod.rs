@@ -1,3 +1,4 @@
+pub mod actions;
 pub mod boards;
 pub mod feed;
 pub mod homefeed;

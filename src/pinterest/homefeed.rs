@@ -23,17 +23,16 @@ impl HomefeedClient {
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
                  (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             )
+            .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
             .build()?;
         Ok(Self { client, cookies })
     }
 
     pub async fn page(&self, bookmarks: Option<&str>) -> Result<(Vec<PinItem>, Option<String>)> {
-        let options = json!({
-            "isPrefetch": false,
-            "field_set_key": "hf_grid",
-            "in_nux": false,
-            "bookmarks": bookmarks.map(|b| vec![b]).unwrap_or_default(),
-        });
+        let mut options = serde_json::Map::new();
+        if let Some(bookmark) = bookmarks {
+            options.insert("bookmarks".into(), json!([bookmark]));
+        }
         let data = json!({
             "options": options,
             "context": {}
@@ -41,22 +40,19 @@ impl HomefeedClient {
 
         let url = format!(
             "{HOMEFEED_URL}?source_url={}&data={}",
-            urlencoding::encode("/"),
+            urlencoding::encode("https://www.pinterest.com/"),
             urlencoding::encode(&data.to_string())
         );
 
         let resp = self
             .client
             .get(&url)
-            .header(
-                "Cookie",
-                format!(
-                    "_auth={}; csrftoken={}",
-                    self.cookies.auth, self.cookies.csrftoken
-                ),
-            )
+            .header("Cookie", self.cookies.header())
             .header("X-CSRFToken", &self.cookies.csrftoken)
             .header("X-Requested-With", "XMLHttpRequest")
+            .header("X-Pinterest-AppState", "active")
+            .header("X-Pinterest-Source-Url", "/")
+            .header("X-Pinterest-PWS-Handler", "www/index.js")
             .header("Accept", "application/json, text/javascript, */*; q=0.01")
             .header("Referer", "https://www.pinterest.com/")
             .send()
@@ -148,32 +144,26 @@ fn try_pin(v: &Value) -> Option<PinItem> {
         .or_else(|| v.pointer("/image"))
         .or_else(|| v.pointer("/data/images"))?;
 
-    let image_url = ["orig", "1200x", "736x", "564x", "474x", "236x"]
+    // Columns are a few hundred pixels wide. The original file is huge and
+    // slow; a mid-size rendition is sharp enough and arrives much sooner.
+    let variant = ["564x", "736x", "474x", "1200x", "orig", "236x"]
         .iter()
         .find_map(|k| {
-            images
-                .get(*k)
-                .and_then(|i| i.get("url"))
-                .and_then(|u| u.as_str())
-                .map(|s| s.to_string())
-        })
-        .or_else(|| {
-            images
-                .get("url")
-                .and_then(|u| u.as_str())
-                .map(|s| s.to_string())
-        })?;
-
-    let (width, height) = ["orig", "1200x", "736x", "564x"]
-        .iter()
-        .find_map(|k| {
-            let i = images.get(*k)?;
-            Some((
-                i.get("width")?.as_u64()? as u32,
-                i.get("height")?.as_u64()? as u32,
-            ))
-        })
-        .unwrap_or((600, 800));
+            let image = images.get(*k)?;
+            let url = image.get("url")?.as_str()?;
+            let width = image.get("width").and_then(|w| w.as_u64()).unwrap_or(600) as u32;
+            let height = image.get("height").and_then(|h| h.as_u64()).unwrap_or(800) as u32;
+            Some((url.to_string(), width, height))
+        });
+    let (image_url, width, height) = if let Some(picked) = variant {
+        picked
+    } else {
+        let url = images
+            .get("url")
+            .and_then(|u| u.as_str())
+            .map(|s| s.to_string())?;
+        (url, 600, 800)
+    };
 
     if width == 0 || height == 0 {
         return None;
