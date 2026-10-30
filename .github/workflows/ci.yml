@@ -24,6 +24,7 @@ jobs:
             wayland-protocols \
             gobject-introspection \
             libgirepository1.0-dev \
+            valac \
             git \
             ca-certificates
           # Ubuntu 24.04 runners do not ship libgtk4-layer-shell-dev.
