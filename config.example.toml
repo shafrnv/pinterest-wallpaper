@@ -1,0 +1,22 @@
+# Copy to ~/.config/pinterest-wallpaper/config.toml
+# (created automatically on first run)
+
+# homefeed | all_boards | { board = { id = "..." } } | { local = { path = "..." } }
+feed = "homefeed"
+# feed = "all_boards"
+# feed = { board = { id = "YOUR_BOARD_ID" } }
+# feed = { local = { path = "/path/to/images" } }
+
+columns = 5
+gap = 8
+background = "#111111"
+
+# background = настоящие обои (скролл только по пустому столу)
+# bottom     = слой над обоями, под окнами — если колёсико не доходит
+layer = "background"
+
+# Нужно только для досок (login-oauth):
+# [oauth]
+# client_id = "YOUR_APP_ID"
+# client_secret = "YOUR_APP_SECRET"
+# redirect_uri = "http://127.0.0.1:8765/callback"
